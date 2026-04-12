@@ -134,6 +134,39 @@ dist
 !.yarn/sdks
 !.yarn/versions
 
-# Vite logs files
-vite.config.js.timestamp-*
-vite.config.ts.timestamp-*
+# Webpack
+.webpack/
+
+# Java / Maven / Gradle
+*.class
+*.jar
+*.war
+*.ear
+*.nar
+target/
+build/
+.gradle/
+gradle-app.setting
+!gradle-wrapper.jar
+.gradletasknamecache
+
+# Spring Boot
+*.orig
+
+# IDE
+.idea/
+*.iml
+*.iws
+*.ipr
+.classpath
+.project
+.settings/
+.factorypath
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# macOS
+.DS_Store

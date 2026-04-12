@@ -1,29 +1,19 @@
 version: '3.9'
 
 services:
-  frontend:
-    build:
-      context: ../frontend
-      dockerfile: ../docker/frontend.Dockerfile
+  ollama:
+    image: ollama/ollama:latest
     ports:
-      - "3000:80"
-    depends_on:
-      - bff
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
-  bff:
-    build:
-      context: ../bff
-      dockerfile: ../docker/bff.Dockerfile
-    ports:
-      - "3001:3001"
-    environment:
-      PORT: 3001
-      BACKEND_URL: http://backend:8080
-      CORS_ORIGIN: http://localhost:3000
-    depends_on:
-      - backend
-
-  backend:
+  spring-backend:
     build:
       context: ../backend
       dockerfile: ../docker/backend.Dockerfile
@@ -31,15 +21,38 @@ services:
       - "8080:8080"
     environment:
       SPRING_AI_OLLAMA_BASE_URL: http://ollama:11434
+      CORS_ALLOWED_ORIGIN: http://localhost:3001
     depends_on:
-      - ollama
+      ollama:
+        condition: service_healthy
 
-  ollama:
-    image: ollama/ollama:latest
+  node-bff:
+    build:
+      context: ../bff
+      dockerfile: ../docker/bff.dev.Dockerfile
     ports:
-      - "11434:11434"
+      - "3001:3001"
     volumes:
-      - ollama_data:/root/.ollama
+      - ../bff/src:/app/src
+    environment:
+      PORT: 3001
+      BACKEND_URL: http://spring-backend:8080
+      CORS_ORIGIN: http://localhost:5173
+    depends_on:
+      - spring-backend
+
+  react-frontend:
+    build:
+      context: ../frontend
+      dockerfile: ../docker/frontend.dev.Dockerfile
+    ports:
+      - "5173:5173"
+    volumes:
+      - ../frontend/src:/app/src
+    environment:
+      BFF_URL: http://node-bff:3001
+    depends_on:
+      - node-bff
 
 volumes:
   ollama_data:

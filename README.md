@@ -117,19 +117,22 @@ npm start          # webpack-dev-server on :5173
 
 Open `http://localhost:5173`.
 
-## Docker (all services)
+## Docker (local dev)
 
 ```bash
 cd docker
 docker compose up --build
 ```
 
-| Service  | Local URL                    |
-|----------|------------------------------|
-| Frontend | http://localhost:3000        |
-| BFF      | http://localhost:3001/health |
-| Backend  | http://localhost:8080        |
-| Ollama   | http://localhost:11434       |
+| Service          | Local URL                          |
+|------------------|------------------------------------|
+| react-frontend   | http://localhost:5173              |
+| node-bff         | http://localhost:3001/health       |
+| spring-backend   | http://localhost:8080              |
+| ollama           | http://localhost:11434             |
+
+`react-frontend` and `node-bff` mount their `src/` directories as volumes, so code changes reload without rebuilding the image.  
+`spring-backend` waits for Ollama's healthcheck before starting.
 
 ## Environment Variables
 

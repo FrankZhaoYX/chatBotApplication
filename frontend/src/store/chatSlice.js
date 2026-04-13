@@ -2,40 +2,39 @@ import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
 
 let msgId = 0;
 
-export const sendMessage = createAsyncThunk(
-  'chat/sendMessage',
-  async (content, { dispatch }) => {
-    dispatch(addMessage({ id: ++msgId, role: 'user', content }));
+export const sendMessage = createAsyncThunk('chat/sendMessage', async (content, { dispatch }) => {
+  dispatch(addMessage({ id: ++msgId, role: 'user', content }));
 
-    const assistantId = ++msgId;
-    dispatch(addMessage({ id: assistantId, role: 'assistant', content: '' }));
-    dispatch(setStreaming(true));
+  const assistantId = ++msgId;
+  dispatch(addMessage({ id: assistantId, role: 'assistant', content: '' }));
+  dispatch(setStreaming(true));
 
-    const response = await fetch('/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: content }),
-    });
+  const response = await fetch('/api/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message: content }),
+  });
 
-    if (!response.ok) throw new Error(`BFF error: ${response.status}`);
+  if (!response.ok) throw new Error(`BFF error: ${response.status}`);
 
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
+  let done = false;
+  while (!done) {
+    const { done: streamDone, value } = await reader.read();
+    done = streamDone;
+    if (done) break;
 
-      const chunk = decoder.decode(value, { stream: true });
-      for (const line of chunk.split('\n')) {
-        if (!line.startsWith('data: ')) continue;
-        const data = line.slice(6).trim();
-        if (data === '[DONE]') return;
-        dispatch(appendToken({ id: assistantId, token: data }));
-      }
+    const chunk = decoder.decode(value, { stream: true });
+    for (const line of chunk.split('\n')) {
+      if (!line.startsWith('data: ')) continue;
+      const data = line.slice(6).trim();
+      if (data === '[DONE]') return;
+      dispatch(appendToken({ id: assistantId, token: data }));
     }
   }
-);
+});
 
 const chatSlice = createSlice({
   name: 'chat',

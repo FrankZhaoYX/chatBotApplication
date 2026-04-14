@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls ~/.m2/repository/org/springframework/ai/spring-ai-mcp*)",
+      "Bash(jar tf:*)"
+    ]
+  }
+}

@@ -2,6 +2,8 @@ server:
   port: 8080
 
 spring:
+  main:
+    web-application-type: reactive
   ai:
     ollama:
       base-url: ${SPRING_AI_OLLAMA_BASE_URL:http://localhost:11434}
@@ -9,3 +11,8 @@ spring:
         options:
           model: gemma4
           temperature: 0.7
+    mcp:
+      server:
+        enabled: true
+        name: chatbot-mcp-server
+        version: 1.0.0

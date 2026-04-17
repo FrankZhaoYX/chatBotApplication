@@ -7,6 +7,9 @@ services:
       - "11434:11434"
     volumes:
       - ollama_data:/root/.ollama
+    environment:
+      # Bind to all interfaces so LAN clients and sibling containers can reach it
+      OLLAMA_HOST: 0.0.0.0
     healthcheck:
       test: ["CMD", "ollama", "list"]
       interval: 10s
@@ -20,7 +23,9 @@ services:
     ports:
       - "8080:8080"
     environment:
-      SPRING_AI_OLLAMA_BASE_URL: http://ollama:11434
+      # Override OLLAMA_URL in docker/.env to point at a LAN machine:
+      #   OLLAMA_URL=http://192.168.50.33:11434
+      SPRING_AI_OLLAMA_BASE_URL: ${OLLAMA_URL:-http://ollama:11434}
       CORS_ALLOWED_ORIGIN: http://localhost:3001
     depends_on:
       ollama:

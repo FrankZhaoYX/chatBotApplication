@@ -18,7 +18,7 @@ The BFF owns auth and session proxying. Spring AI owns MCP tool orchestration wi
 | Frontend | React 18, Redux Toolkit, Webpack 5              | 5173  |
 | BFF      | Node.js 20, Express, Axios                      | 3001  |
 | Backend  | Java 21, Spring Boot 3.3, Spring AI 1.0.0-M6   | 8080  |
-| AI       | Ollama (local MCP server, model: `llama3.2`)    | 11434 |
+| AI       | Ollama (local or LAN, model: `gemma4`)          | 11434 |
 
 ## Monorepo Structure
 
@@ -44,12 +44,16 @@ The BFF owns auth and session proxying. Spring AI owns MCP tool orchestration wi
 │       ├── routes/chat.js       # SSE proxy → Spring Boot
 │       └── middleware/auth.js   # JWT / session stub
 │
-├── backend/                    # Java Spring Boot — MCP tool orchestration
+├── backend/                    # Java Spring Boot — MCP server + AI orchestration
 │   ├── pom.xml
 │   └── src/main/
 │       ├── java/com/chatbot/
 │       │   ├── ChatBotApplication.java
-│       │   ├── config/WebConfig.java    # Global CORS
+│       │   ├── config/
+│       │   │   ├── WebConfig.java       # Reactive CORS (CorsWebFilter)
+│       │   │   └── McpToolsConfig.java  # Registers tools with MCP server
+│       │   ├── tools/
+│       │   │   └── SampleTools.java     # MCP tools: echo, add, currentTime
 │       │   ├── controller/ChatController.java
 │       │   └── service/ChatService.java
 │       └── resources/application.yml
@@ -64,12 +68,50 @@ The BFF owns auth and session proxying. Spring AI owns MCP tool orchestration wi
 └── README.md
 ```
 
+## MCP Server
+
+The backend exposes an MCP server over HTTP SSE transport (Spring AI WebFlux).
+
+| Endpoint         | Method | Purpose                        |
+|------------------|--------|--------------------------------|
+| `/sse`           | GET    | SSE stream — subscribe here    |
+| `/mcp/message`   | POST   | Send JSON-RPC 2.0 messages     |
+
+### Registered Tools
+
+| Tool          | Description                                      |
+|---------------|--------------------------------------------------|
+| `echo`        | Echoes text back — round-trip test               |
+| `add`         | Returns the sum of two integers                  |
+| `currentTime` | Returns ISO-8601 datetime for a given timezone   |
+
+### Verify MCP (two terminals)
+
+**Terminal 1** — subscribe to SSE stream:
+```bash
+curl -N -H "Accept: text/event-stream" http://localhost:8080/sse
+```
+
+**Terminal 2** — list tools (response appears in terminal 1):
+```bash
+curl -s -X POST http://localhost:8080/mcp/message \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+```
+
+Call a tool:
+```bash
+curl -s -X POST http://localhost:8080/mcp/message \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"add","arguments":{"a":21,"b":21}}}'
+```
+
 ## CORS Policy
 
 | Boundary          | Allowed origin            | Configured in              |
 |-------------------|---------------------------|----------------------------|
 | BFF ← Frontend    | `http://localhost:5173`   | `bff/src/index.js` (`cors` middleware) |
-| Spring ← BFF      | `http://localhost:3001`   | `config/WebConfig.java` (`WebMvcConfigurer`) |
+| Spring ← BFF      | `http://localhost:3001`   | `config/WebConfig.java` (`CorsWebFilter`) |
 
 In Docker, the Spring allowed origin is `http://bff:3001` (internal service name).
 
@@ -79,10 +121,10 @@ In Docker, the Spring allowed origin is `http://bff:3001` (internal service name
 - Java 21+
 - Maven 3.9+
 - Docker & Docker Compose
-- [Ollama](https://ollama.com) with `llama3.2` pulled
+- [Ollama](https://ollama.com) with `gemma4` pulled
 
 ```bash
-ollama pull llama3.2
+ollama pull gemma4
 ```
 
 ## Local Development
@@ -91,13 +133,22 @@ Each service runs independently. Start them in order:
 
 **1. Ollama**
 ```bash
+# Local only
 ollama serve
+
+# LAN access (allow connections from other machines on the same network)
+OLLAMA_HOST=0.0.0.0 ollama serve
 ```
 
 **2. Spring Boot backend**
 ```bash
 cd backend
+
+# Local Ollama
 mvn spring-boot:run
+
+# Ollama on another machine (e.g. desktop at 192.168.50.33)
+SPRING_AI_OLLAMA_BASE_URL=http://192.168.50.33:11434 mvn spring-boot:run
 ```
 
 **3. Node.js BFF**
@@ -144,7 +195,7 @@ docker compose up --build
 | `BACKEND_URL`  | `http://localhost:8080`   | Spring Boot base URL         |
 
 ### Backend (`application.yml` / env)
-| Variable                  | Default                    | Description              |
-|---------------------------|----------------------------|--------------------------|
-| `SPRING_AI_OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama base URL          |
-| `CORS_ALLOWED_ORIGIN`     | `http://localhost:3001`    | Allowed BFF origin       |
+| Variable                    | Default                    | Description                        |
+|-----------------------------|----------------------------|------------------------------------|
+| `SPRING_AI_OLLAMA_BASE_URL` | `http://localhost:11434`   | Ollama base URL (local or LAN IP)  |
+| `CORS_ALLOWED_ORIGIN`       | `http://localhost:3001`    | Allowed BFF origin                 |

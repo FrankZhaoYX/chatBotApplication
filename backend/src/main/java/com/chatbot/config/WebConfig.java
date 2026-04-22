@@ -19,6 +19,7 @@ public class WebConfig {
         config.addAllowedOrigin(allowedOrigin);
         config.addAllowedMethod("GET");
         config.addAllowedMethod("POST");
+        config.addAllowedMethod("DELETE");
         config.addAllowedMethod("OPTIONS");
         config.addAllowedHeader("*");
         config.setAllowCredentials(true);

@@ -16,6 +16,18 @@ services:
       timeout: 5s
       retries: 5
 
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   spring-backend:
     build:
       context: ../backend
@@ -27,8 +39,12 @@ services:
       #   OLLAMA_URL=http://192.168.50.33:11434
       SPRING_AI_OLLAMA_BASE_URL: ${OLLAMA_URL:-http://ollama:11434}
       CORS_ALLOWED_ORIGIN: http://localhost:3001
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
     depends_on:
       ollama:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
   node-bff:
@@ -61,3 +77,4 @@ services:
 
 volumes:
   ollama_data:
+  redis_data:

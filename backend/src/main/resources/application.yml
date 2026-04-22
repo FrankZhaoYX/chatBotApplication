@@ -18,6 +18,10 @@ spring:
     console:
       enabled: true
       path: /h2-console
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
   ai:
     ollama:
       base-url: ${SPRING_AI_OLLAMA_BASE_URL:http://localhost:11434}
@@ -35,3 +39,5 @@ chat:
   system-prompt: "You are a helpful assistant."
   history:
     max-messages: 20
+  session:
+    redis-ttl-minutes: 60

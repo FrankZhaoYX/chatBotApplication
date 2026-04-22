@@ -37,8 +37,7 @@ public class ChatService {
     public Flux<String> streamResponse(String message, String sessionId) {
         log.debug("Stream request — sessionId={}", sessionId);
 
-        sessionService.addUserMessage(sessionId, message);
-        List<Message> history = Objects.requireNonNull(sessionService.getOrCreateHistory(sessionId));
+        List<Message> history = Objects.requireNonNull(sessionService.addUserAndGetHistory(sessionId, message));
         StringBuilder accumulated = new StringBuilder();
 
         return chatClient.prompt()
@@ -62,15 +61,15 @@ public class ChatService {
     public Mono<String> invokeResponse(String message, String sessionId) {
         log.debug("Invoke request — sessionId={}", sessionId);
 
-        sessionService.addUserMessage(sessionId, message);
-        List<Message> history = Objects.requireNonNull(sessionService.getOrCreateHistory(sessionId));
+        List<Message> history = Objects.requireNonNull(sessionService.addUserAndGetHistory(sessionId, message));
 
-        return Mono.fromCallable(() ->
-                        chatClient.prompt()
-                                .messages(history)
-                                .call()
-                                .content()
-                )
+        return Mono.fromCallable(() -> {
+                    String response = chatClient.prompt()
+                            .messages(history)
+                            .call()
+                            .content();
+                    return response != null ? response : "";
+                })
                 .subscribeOn(Schedulers.boundedElastic())
                 .doOnSuccess(response ->
                         sessionService.addAssistantMessage(sessionId, response)

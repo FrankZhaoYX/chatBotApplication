@@ -2,8 +2,12 @@ package com.chatbot.service;
 
 import com.chatbot.entity.ChatMessage;
 import com.chatbot.entity.MessageRole;
+import com.chatbot.model.MessageDTO;
 import com.chatbot.model.SessionSummary;
 import com.chatbot.repository.ChatMessageRepository;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -11,16 +15,18 @@ import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
 
 @Slf4j
 @Service
@@ -33,51 +39,69 @@ public class SessionService {
     @Value("${chat.history.max-messages:20}")
     private int maxMessages;
 
-    private final ChatMessageRepository chatMessageRepository;
+    @Value("${chat.session.redis-ttl-minutes:60}")
+    private int redisTtlMinutes;
 
-    // In-memory cache — rebuilt from DB on cache miss (e.g. after restart)
-    private final ConcurrentHashMap<String, List<Message>> sessions = new ConcurrentHashMap<>();
+    private static final String KEY_PREFIX = "chat:session:";
+
+    private final ChatMessageRepository chatMessageRepository;
+    private final StringRedisTemplate redisTemplate;
+    private final ObjectMapper objectMapper;
 
     /**
-     * Returns the full history for a session.
-     * On cache miss, loads persisted messages from the DB before returning.
+     * Returns the full history for a session as Spring AI Message objects.
+     * Reads from Redis; on miss, rebuilds from DB and primes the cache.
      */
     public List<Message> getOrCreateHistory(String sessionId) {
-        return sessions.computeIfAbsent(sessionId, this::loadOrCreate);
+        return toSpringMessages(getOrCreateDTOs(sessionId));
     }
 
     public void addUserMessage(String sessionId, String content) {
-        getOrCreateHistory(sessionId).add(new UserMessage(content));
-        trim(getOrCreateHistory(sessionId));
+        addUserAndGetHistory(sessionId, content);
+    }
+
+    /**
+     * Adds the user message and returns the updated history in one Redis round-trip.
+     * Use this in ChatService to avoid a redundant read after the write.
+     */
+    public List<Message> addUserAndGetHistory(String sessionId, String content) {
+        List<MessageDTO> history = getOrCreateDTOs(sessionId);
+        history.add(new MessageDTO("user", content));
+        trimDTOs(history);
+        saveDTOs(sessionId, history);
         persist(sessionId, MessageRole.USER, content);
         log.debug("Session {} — user message saved", sessionId);
+        return toSpringMessages(history);
     }
 
     public void addAssistantMessage(String sessionId, String content) {
-        getOrCreateHistory(sessionId).add(new AssistantMessage(content));
-        trim(getOrCreateHistory(sessionId));
+        List<MessageDTO> history = getOrCreateDTOs(sessionId);
+        history.add(new MessageDTO("assistant", content));
+        trimDTOs(history);
+        saveDTOs(sessionId, history);
         persist(sessionId, MessageRole.ASSISTANT, content);
         log.debug("Session {} — assistant message saved", sessionId);
     }
 
     /**
-     * Returns summaries for all sessions — merges the in-memory cache (current JVM)
-     * with the DB (survives restarts).
+     * Returns summaries for all sessions — merges DB session IDs with Redis keys.
      */
     public List<SessionSummary> getAllSummaries() {
         Set<String> allIds = new HashSet<>(chatMessageRepository.findDistinctSessionIds());
-        allIds.addAll(sessions.keySet());
+
+        // Include sessions that only exist in Redis (no DB row yet)
+        // Note: KEYS is O(N) — acceptable for a low-volume chat app; swap to SCAN if needed
+        Set<String> redisKeys = redisTemplate.keys(KEY_PREFIX + "*");
+        if (redisKeys != null) {
+            redisKeys.forEach(key -> allIds.add(key.substring(KEY_PREFIX.length())));
+        }
 
         return allIds.stream()
                 .map(sessionId -> {
-                    String preview = chatMessageRepository
-                            .findTopBySessionIdOrderByTimestampDesc(sessionId)
-                            .map(m -> truncate(m.getContent(), 80))
-                            .orElse("");
-                    String role = chatMessageRepository
-                            .findTopBySessionIdOrderByTimestampDesc(sessionId)
-                            .map(m -> m.getRole().name().toLowerCase())
-                            .orElse("");
+                    var last = chatMessageRepository
+                            .findTopBySessionIdOrderByTimestampDesc(sessionId);
+                    String preview = last.map(m -> truncate(m.getContent(), 80)).orElse("");
+                    String role    = last.map(m -> m.getRole().name().toLowerCase()).orElse("");
                     int count = (int) chatMessageRepository.countBySessionId(sessionId);
                     return new SessionSummary(sessionId, preview, role, count);
                 })
@@ -87,34 +111,68 @@ public class SessionService {
 
     @Transactional
     public void clearSession(String sessionId) {
-        sessions.remove(sessionId);
+        redisTemplate.delete(KEY_PREFIX + sessionId);
         chatMessageRepository.deleteBySessionId(sessionId);
         log.debug("Session {} cleared", sessionId);
     }
 
     // --- private helpers ---
 
-    private List<Message> loadOrCreate(String sessionId) {
-        List<Message> history = new ArrayList<>();
-        history.add(new SystemMessage(systemPrompt));
+    private List<MessageDTO> getOrCreateDTOs(String sessionId) {
+        String key = KEY_PREFIX + sessionId;
+        String json = redisTemplate.opsForValue().get(key);
+        if (json != null) {
+            try {
+                List<MessageDTO> dtos = objectMapper.readValue(json, new TypeReference<>() {});
+                // Refresh TTL on every access so active sessions don't expire mid-conversation
+                redisTemplate.expire(key, Duration.ofMinutes(redisTtlMinutes));
+                return new ArrayList<>(dtos);
+            } catch (JsonProcessingException e) {
+                log.warn("Session {} — Redis deserialization failed, rebuilding from DB", sessionId, e);
+            }
+        }
+        return loadFromDB(sessionId);
+    }
+
+    private List<MessageDTO> loadFromDB(String sessionId) {
+        List<MessageDTO> history = new ArrayList<>();
+        history.add(new MessageDTO("system", systemPrompt));
 
         List<ChatMessage> persisted =
                 chatMessageRepository.findBySessionIdOrderByTimestampAsc(sessionId);
+        persisted.stream()
+                .map(m -> new MessageDTO(m.getRole().name().toLowerCase(), m.getContent()))
+                .forEach(history::add);
 
-        persisted.stream().map(this::toSpringMessage).forEach(history::add);
+        saveDTOs(sessionId, history);
 
         if (!persisted.isEmpty()) {
-            log.debug("Session {} — restored {} messages from DB", sessionId, persisted.size());
+            log.debug("Session {} — restored {} messages from DB into Redis", sessionId, persisted.size());
         } else {
             log.debug("Session {} — new session created", sessionId);
         }
         return history;
     }
 
-    private Message toSpringMessage(ChatMessage msg) {
-        return switch (msg.getRole()) {
-            case USER -> new UserMessage(msg.getContent());
-            case ASSISTANT -> new AssistantMessage(msg.getContent());
+    private void saveDTOs(String sessionId, List<MessageDTO> dtos) {
+        try {
+            String json = objectMapper.writeValueAsString(dtos);
+            redisTemplate.opsForValue().set(
+                    KEY_PREFIX + sessionId, json, Duration.ofMinutes(redisTtlMinutes));
+        } catch (JsonProcessingException e) {
+            log.error("Session {} — failed to serialize history to Redis", sessionId, e);
+        }
+    }
+
+    private List<Message> toSpringMessages(List<MessageDTO> dtos) {
+        return dtos.stream().map(this::toSpringMessage).collect(Collectors.toList());
+    }
+
+    private Message toSpringMessage(MessageDTO dto) {
+        return switch (dto.role()) {
+            case "user"      -> new UserMessage(dto.content());
+            case "assistant" -> new AssistantMessage(dto.content());
+            default          -> new SystemMessage(dto.content());
         };
     }
 
@@ -127,7 +185,7 @@ public class SessionService {
                 .build());
     }
 
-    private void trim(List<Message> history) {
+    private void trimDTOs(List<MessageDTO> history) {
         while (history.size() > maxMessages + 1) {  // +1 for system message
             history.remove(1);                        // drop oldest non-system message
         }
